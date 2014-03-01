@@ -1,0 +1,218 @@
+#!/usr/bin/perl
+
+##########################################
+# Author: Erik Dorthe <edorthe at cari.net>
+# Copyright 2013 CARI.net
+# 
+# May be distributed under the terms of the GNU General Public License Version 3 (GPLv3).
+#
+##########################################
+# This script is intended to get or change the status on a Tripp Lite PDU
+# using an SNMP Card. Command line arguments are accepted, as well as 
+# fenced style arguments.
+#
+# An example fenced line from cluster.conf:
+#   <fencedevice agent="fence_tripplite_snmp" name="tripplite" ipaddr="192.168.0.150"/ 
+#   community="tripplite">
+#
+# An example method line:
+# <device name="tripplite" port="5">
+#
+# You can call this script from the command line. Options are as follows:
+# -o ignore STDIN and accept command line options
+# -h Hostname or IP address of the PDU
+# -a Action to request: status, on, off, or reboot
+# -p outlet number to work with
+# -c SNMP community to use. Must have read/write access
+#
+# If the script succeeds at powering on or off, it exits on "0"
+# If it fails to power on or off, it exits on "-1"
+# After every interaction, the power state is printed to STDOUT
+########################################
+
+### Includes ###
+use warnings;
+use strict;
+use Getopt::Long;
+use Net::SNMP;
+
+### Options ###
+#the following variables are taken from the command line
+my $address = "192.168.0.1"; #this is your IP address or hostname
+my $function = "reboot"; #this is the function you want to run. Options are: status, on, off, cycle
+my $receptacle = "0"; #this is the power outlet you want to interact with
+my $community = "tripplite"; #this is a read/write snmp community on the device
+my $cli; #if this is defined, do not listen for stdin
+#get all the command line options
+GetOptions ('h|address=s' => \$address, 'a|action=s' => \$function, 'p|port=i' => \$receptacle, 'c|community=s' => \$community, 'o' => \$cli);
+
+### STDIN Options ###
+#we will need these in a moment
+my @options;
+my $option;
+
+#check if we care about stdin or cli
+if (!$cli) {
+   #if arguments are provided with STDIN (like fenced), get them here
+   while (<>){
+      chomp;
+      push (@options, $_);
+   }
+
+   #turn these arguments into real options
+   foreach (@options){
+
+      #get the options from STDIN and split them into parameter/value pairs
+      (my $param,my $value)=split(/=/,$_);
+
+      #is this parameter the outlet?
+      if ( $param eq "port" ){
+        $receptacle = $value;
+      } 
+
+      #is it the address?
+      if ( $param eq "ipaddr" ){
+         $address = $value;
+      }
+   
+      #is it the commnunity name?
+      if ( $param eq "community" ){
+         $community = $value;
+      }
+   
+      #is it the requested function?
+      if ( $param eq "action" ){
+         $function = $value;
+      }
+   }
+}
+
+### Prepare for Net::SNMP ###
+#make our snmp session (it needs a host, version and community
+(my $session, my $error) = Net::SNMP->session(-hostname => $address, -version => '2', -community => $community);
+
+#only continue if the session was made right
+die "session error: $error" unless ($session);
+
+my $state;
+my $cycle;
+
+### Check or change the status ###
+if ($function eq "status"){ #if the user asked for a status report
+   $state = &trippstat($receptacle);
+
+   #lets get some output
+   print "Outlet $receptacle is currently $state\n";
+
+} elsif ($function eq "on" or $function eq "off"){ #what if we want to set the state?
+   #set the state
+   my $set = &tripponoff($receptacle, $function);
+
+   #wait for a little bit
+   sleep(10);
+
+   #check the state to be sure things worked out
+   $state = &trippstat($receptacle);
+   print "Outlet $receptacle is currently $state\n";
+
+} elsif ($function eq "reboot"){ #and if we want a reboot?
+   #power cycle and get the return
+   $cycle = &trippreboot ($receptacle);
+
+} else { #if we don't get a good function, let the user know
+   print "Please enter a valid action.\n tValid functions are status, on, off, and reboot.\n";
+}
+
+#we are done with our snmp session
+$session->close;
+
+#give a useful output for on/off requests
+if ($function eq "on" or $function eq "off"){
+   if ($function eq $state){
+      exit 0;
+   } else {
+      exit -1;
+   }
+}
+
+#if we had a reboot, return the right output for it
+if ($function eq "reboot"){
+   exit $cycle;
+}
+
+### Subroutines ###
+
+sub trippstat {
+#This function can check the status of a tripplite PDU outlet
+#give it the receptacle as an argument
+#it will return the status as on or off
+
+   #prep the request we want to make
+   my $status = $session->get_request(".1.3.6.1.4.1.850.100.1.10.2.1.2.$_[0]") or die($!);
+
+   #only continue if the request was successful
+   die "request error: ".$session->error unless (defined $status);
+
+   #we need this in a moment
+   my $state = '';
+
+   #turn the result into the form we want
+   if ($status->{".1.3.6.1.4.1.850.100.1.10.2.1.2.$receptacle"} == 1){
+      $state = "off";
+   } elsif ($status->{".1.3.6.1.4.1.850.100.1.10.2.1.2.$receptacle"} == 2){
+      $state = "on";
+   } else {
+      die "The status was unreadable.\n";
+   }
+}
+
+sub tripponoff {
+#This function can change the status of a tripplite PDU outlet
+#give it the receptacle and then function as arguments
+#It will die if the SNMP fails, but you should also check status afterward
+
+   #we will need this variable in a moment
+   my $action = '';
+
+   #figure out which command we want
+   if ($_[1] eq "on"){
+      $action = 2;
+   } elsif ($_[1] eq "off"){
+      $action = 1;
+   } 
+  
+   #call the set request for on or off
+   my $set = $session->set_request(".1.3.6.1.4.1.850.100.1.10.2.1.4.$_[0]",INTEGER,"$action");
+   
+   #only continue if the request was successful
+   die "request error: ".$session->error unless (defined $set);
+}
+
+sub trippreboot {
+#this function power cycles the PDU outlet
+#give it the receptacle as an argument
+
+   #shut the port down
+   my $set = $session->set_request(".1.3.6.1.4.1.850.100.1.10.2.1.4.$_[0]",INTEGER,"1");
+
+   #wait for a little bit
+   sleep(10);
+
+   #check if the port actually turned off
+   if (&trippstat($_[0]) eq "off"){
+      #turn it back on
+      $session->set_request(".1.3.6.1.4.1.850.100.1.10.2.1.4.$_[0]",INTEGER,"2");
+
+      #wait again
+      sleep(10);
+      
+      #determine the outcome
+      if (&trippstat($_[0]) eq "on"){
+         return 0;
+      } else {
+         return -1;
+      }
+   } else {
+      return -1;
+   }
+}

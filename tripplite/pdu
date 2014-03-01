@@ -1,0 +1,65 @@
+#!/bin/bash
+#
+# Wrapper to Tripp-Lite PDU fencing script
+# 
+
+# PDU IP address, username and path to command
+PDUip="192.168.1.2"
+PDUun=""
+cmd="/usr/sbin/fence_tripplite_snmp"
+
+function help {
+echo "\
++ Tripp-Lite PDU control script +
+ Version 0.1  ray@eboundhost.com
+
+USAGE:
+  $0 { ssh | {PDU Port #} on|off }
+Example:
+  $0 ssh -- Login to PDU
+  $0 10 on -- turn on port #10"
+exit 1
+}
+
+function pdulogin {
+ echo "Logging in.."
+ ssh ${PDUun:-"localadmin"}@${PDUip}
+ exit 0
+}
+
+
+function input {
+case $1 in
+	1)	 PORT=1;;
+	2)	 PORT=2;;
+	3)	 PORT=3;;
+	4)	 PORT=4;;
+	5)	 PORT=5;;
+	6)	 PORT=6;;
+	7)	 PORT=7;;
+	8)	 PORT=8;;
+	9)	 PORT=9;;
+	10)	 PORT=10;;
+	11)	 PORT=11;;
+	12)	 PORT=12;;
+	13)	 PORT=13;;
+	14)	 PORT=14;;
+	15)	 PORT=15;;
+	16)	 PORT=16;;
+	off)	 POWER="off";;
+	on)	 POWER="on";;
+	ssh)	 pdulogin;;
+	*) help ;;
+esac
+}
+
+#Test for two arguments or show help
+[ $1 ] && input $1 || help
+[ $2 ] && input $2 || help
+
+#Test that both port and power status where given or show help
+[ -n $PORT  -a  -n $POWER ] ||  help
+
+# until loop for repeating command on non-zero exit
+$cmd --h=$PDUip --p=$PORT --a=$POWER --o #>/dev/null 2>&1 &
+echo "Outlet $PORT requesting $POWER"
